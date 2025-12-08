@@ -108,13 +108,6 @@ Click: Running Shoes  → Similar: Yoga mat, smartwatch, athletic wear
 
 ```
 AI_embadding/
-├── 📘 Documentation/
-│   ├── GETTING_STARTED.md    # First-time setup guide
-│   ├── QUICKSTART.md         # Detailed instructions
-│   ├── ARCHITECTURE.md       # Technical deep-dive
-│   ├── TESTING.md            # Test scenarios
-│   └── DOCS_INDEX.md         # Documentation hub
-│
 ├── 🐍 backend/               # Python FastAPI
 │   ├── app.py               # Main application
 │   ├── services/            # Core AI services
