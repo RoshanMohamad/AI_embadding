@@ -33,44 +33,46 @@ class RecommendationService:
         Returns:
             Tuple of (list of recommended products, list of similarity scores)
         """
-        # Get the source product
+        # Get the source product embedding
         try:
-            results = self.search_service.products_collection.get(
-                ids=[product_id],
-                include=['embeddings', 'metadatas']
-            )
+            results = self.search_service.index.fetch(ids=[product_id])
             
-            if not results['embeddings'] or not results['embeddings'][0]:
+            if product_id not in results['vectors']:
                 return [], []
             
-            source_embedding = results['embeddings'][0]
+            source_embedding = results['vectors'][product_id]['values']
             
-            # Find similar products (excluding the source product)
-            similar_results = self.search_service.products_collection.query(
-                query_embeddings=[source_embedding],
-                n_results=limit + 1  # +1 to account for the source product itself
+            # Find similar products
+            similar_results = self.search_service.index.query(
+                vector=source_embedding,
+                top_k=limit + 1,  # +1 to account for the source product itself
+                include_metadata=True
             )
             
             recommendations = []
             scores = []
             
-            if similar_results['ids'] and similar_results['ids'][0]:
-                for i, result_id in enumerate(similar_results['ids'][0]):
-                    # Skip the source product itself
-                    if result_id == product_id:
-                        continue
-                    
-                    metadata = similar_results['metadatas'][0][i]
-                    product_data = json.loads(metadata['product_json'])
-                    recommendations.append(Product(**product_data))
-                    
-                    # Calculate similarity score (distance to similarity)
-                    distance = similar_results['distances'][0][i]
-                    similarity = 1 - distance  # Convert distance to similarity
-                    scores.append(similarity)
-                    
-                    if len(recommendations) >= limit:
-                        break
+            for match in similar_results['matches']:
+                # Skip the source product itself
+                if match['id'] == product_id:
+                    continue
+                
+                metadata = match['metadata']
+                product_data = {
+                    "id": match['id'],
+                    "name": metadata['name'],
+                    "description": metadata['description'],
+                    "category": metadata['category'],
+                    "price": metadata['price'],
+                    "rating": metadata.get('rating', 0),
+                    "image": metadata.get('image', ''),
+                    "tags": metadata.get('tags', '').split(',') if metadata.get('tags') else []
+                }
+                recommendations.append(Product(**product_data))
+                scores.append(match['score'])
+                
+                if len(recommendations) >= limit:
+                    break
             
             return recommendations, scores
             
@@ -113,23 +115,29 @@ class RecommendationService:
         query_embedding = self.embedding_service.generate_embedding(query)
         
         # Find similar products
-        results = self.search_service.products_collection.query(
-            query_embeddings=[query_embedding],
-            n_results=limit
+        results = self.search_service.index.query(
+            vector=query_embedding,
+            top_k=limit,
+            include_metadata=True
         )
         
         recommendations = []
         scores = []
         
-        if results['ids'] and results['ids'][0]:
-            for i, metadata in enumerate(results['metadatas'][0]):
-                product_data = json.loads(metadata['product_json'])
-                recommendations.append(Product(**product_data))
-                
-                # Calculate similarity score
-                distance = results['distances'][0][i]
-                similarity = 1 - distance
-                scores.append(similarity)
+        for match in results['matches']:
+            metadata = match['metadata']
+            product_data = {
+                "id": match['id'],
+                "name": metadata['name'],
+                "description": metadata['description'],
+                "category": metadata['category'],
+                "price": metadata['price'],
+                "rating": metadata.get('rating', 0),
+                "image": metadata.get('image', ''),
+                "tags": metadata.get('tags', '').split(',') if metadata.get('tags') else []
+            }
+            recommendations.append(Product(**product_data))
+            scores.append(match['score'])
         
         return recommendations, scores
     

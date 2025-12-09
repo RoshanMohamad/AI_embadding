@@ -4,16 +4,20 @@ echo AI Shopping Assistant - Backend Setup
 echo ============================================
 echo.
 
-echo [1/3] Creating virtual environment...
+echo [1/4] Creating virtual environment...
 python -m venv venv
 
 echo.
-echo [2/3] Activating virtual environment...
+echo [2/4] Activating virtual environment...
 call venv\Scripts\activate
 
 echo.
-echo [3/3] Installing dependencies...
-pip install -r requirements.txt
+echo [3/4] Upgrading pip, setuptools, and wheel...
+python -m pip install --upgrade pip setuptools wheel
+
+echo.
+echo [4/4] Installing dependencies...
+pip install --prefer-binary -r requirements.txt
 
 echo.
 echo ============================================
