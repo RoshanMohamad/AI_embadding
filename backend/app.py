@@ -22,6 +22,8 @@ from services.search_service import SearchService
 from services.rag_service import RAGService
 from services.recommendation_service import RecommendationService
 from data.sample_data import PRODUCTS, DOCUMENTS
+from dotenv import load_dotenv
+import pathlib
 
 
 # Global service instances
@@ -34,6 +36,10 @@ recommendation_service: RecommendationService = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize services on startup"""
+    # Load environment variables from a local .env file (for local development)
+    # This is safe because .env is ignored by .gitignore
+    env_path = pathlib.Path(__file__).parent / ".env"
+    load_dotenv(dotenv_path=env_path)
     global embedding_service, search_service, rag_service, recommendation_service
     
     print("\n" + "="*60)
