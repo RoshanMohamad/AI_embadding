@@ -35,41 +35,36 @@ class RecommendationService:
         """
         # Get the source product embedding
         try:
-            results = self.search_service.index.fetch(ids=[product_id])
-            
-            if product_id not in results['vectors']:
+            results = self.search_service.collection.get(ids=[product_id], include=["embeddings"])
+
+            ids = results.get('ids', [])
+            embeddings = results.get('embeddings', [])
+
+            if not ids or not embeddings:
                 return [], []
-            
-            source_embedding = results['vectors'][product_id]['values']
-            
-            # Find similar products
-            similar_results = self.search_service.index.query(
-                vector=source_embedding,
-                top_k=limit + 1,  # +1 to account for the source product itself
-                include_metadata=True
+
+            source_embedding = embeddings[0]
+
+            similar_results = self.search_service.collection.query(
+                query_embeddings=[source_embedding],
+                n_results=limit + 1,
+                include=["metadatas", "distances"]
             )
             
             recommendations = []
             scores = []
-            
-            for match in similar_results['matches']:
+
+            match_ids = similar_results.get('ids', [[]])[0]
+            match_metadatas = similar_results.get('metadatas', [[]])[0]
+            match_distances = similar_results.get('distances', [[]])[0]
+
+            for match_id, metadata, distance in zip(match_ids, match_metadatas, match_distances):
                 # Skip the source product itself
-                if match['id'] == product_id:
+                if match_id == product_id:
                     continue
-                
-                metadata = match['metadata']
-                product_data = {
-                    "id": match['id'],
-                    "name": metadata['name'],
-                    "description": metadata['description'],
-                    "category": metadata['category'],
-                    "price": metadata['price'],
-                    "rating": metadata.get('rating', 0),
-                    "image": metadata.get('image', ''),
-                    "tags": metadata.get('tags', '').split(',') if metadata.get('tags') else []
-                }
-                recommendations.append(Product(**product_data))
-                scores.append(match['score'])
+
+                recommendations.append(self.search_service._product_from_metadata(match_id, metadata or {}))
+                scores.append(1 - float(distance) if distance is not None else 0.0)
                 
                 if len(recommendations) >= limit:
                     break
@@ -115,29 +110,22 @@ class RecommendationService:
         query_embedding = self.embedding_service.generate_embedding(query)
         
         # Find similar products
-        results = self.search_service.index.query(
-            vector=query_embedding,
-            top_k=limit,
-            include_metadata=True
+        results = self.search_service.collection.query(
+            query_embeddings=[query_embedding],
+            n_results=limit,
+            include=["metadatas", "distances"]
         )
         
         recommendations = []
         scores = []
-        
-        for match in results['matches']:
-            metadata = match['metadata']
-            product_data = {
-                "id": match['id'],
-                "name": metadata['name'],
-                "description": metadata['description'],
-                "category": metadata['category'],
-                "price": metadata['price'],
-                "rating": metadata.get('rating', 0),
-                "image": metadata.get('image', ''),
-                "tags": metadata.get('tags', '').split(',') if metadata.get('tags') else []
-            }
-            recommendations.append(Product(**product_data))
-            scores.append(match['score'])
+
+        match_ids = results.get('ids', [[]])[0]
+        match_metadatas = results.get('metadatas', [[]])[0]
+        match_distances = results.get('distances', [[]])[0]
+
+        for match_id, metadata, distance in zip(match_ids, match_metadatas, match_distances):
+            recommendations.append(self.search_service._product_from_metadata(match_id, metadata or {}))
+            scores.append(1 - float(distance) if distance is not None else 0.0)
         
         return recommendations, scores
     

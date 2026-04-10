@@ -1,7 +1,8 @@
 """RAG (Retrieval-Augmented Generation) service for answering questions"""
 
-from pinecone import Pinecone, ServerlessSpec
+from pathlib import Path
 from typing import List, Dict, Any, Optional
+import chromadb
 from services.embedding_service import EmbeddingService
 from services.search_service import SearchService
 import json
@@ -15,7 +16,7 @@ class RAGService:
         self,
         embedding_service: EmbeddingService,
         search_service: SearchService,
-        index_name: str = "documents"
+        collection_name: str = "documents"
     ):
         """
         Initialize RAG service
@@ -23,44 +24,30 @@ class RAGService:
         Args:
             embedding_service: Instance of EmbeddingService
             search_service: Instance of SearchService for product context
-            index_name: Name of the Pinecone index for documents
+            collection_name: Name of the ChromaDB collection for documents
         """
         self.embedding_service = embedding_service
         self.search_service = search_service
-        self.index_name = index_name
-        
-        # Initialize Pinecone client
-        api_key = os.getenv("PINECONE_API_KEY")
-        if not api_key:
-            raise ValueError("PINECONE_API_KEY environment variable is required")
-        
-        self.pc = Pinecone(api_key=api_key)
-        
-        # Get embedding dimension
-        embedding_dim = self.embedding_service.get_model_info()["embedding_dimension"]
-        
-        # Create index if it doesn't exist
-        if index_name not in self.pc.list_indexes().names():
-            self.pc.create_index(
-                name=index_name,
-                dimension=embedding_dim,
-                metric="cosine",
-                spec=ServerlessSpec(cloud="aws", region="us-east-1")
-            )
-        
-        # Connect to index
-        self.index = self.pc.Index(index_name)
-        
-        # Wait for index to be ready
-        import time
-        time.sleep(1)
-        
-        stats = self.index.describe_index_stats()
-        print(f"✓ RAG service initialized with {stats['total_vector_count']} documents")
+        self.collection_name = collection_name
+
+        persist_directory = os.getenv(
+            "CHROMA_DB_PATH",
+            str(Path(__file__).resolve().parents[1] / "chroma_db")
+        )
+        self.persist_directory = persist_directory
+        Path(self.persist_directory).mkdir(parents=True, exist_ok=True)
+
+        self.client = chromadb.PersistentClient(path=self.persist_directory)
+        self.collection = self.client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"}
+        )
+
+        print(f"✓ RAG service initialized with {self.collection.count()} documents")
     
     def index_documents(self, documents: List[Dict[str, Any]]) -> int:
         """
-        Index documents in Pinecone with embeddings
+        Index documents in ChromaDB with embeddings
         
         Args:
             documents: List of document dictionaries to index
@@ -70,44 +57,36 @@ class RAGService:
         """
         if not documents:
             return 0
-        
-        # Check if documents already exist
-        stats = self.index.describe_index_stats()
-        existing_count = stats['total_vector_count']
-        if existing_count >= len(documents):
-            print(f"Documents already indexed ({existing_count} documents)")
-            return existing_count
-        
+
         print(f"Indexing {len(documents)} documents...")
-        
-        vectors = []
-        
+
+        ids = []
+        embeddings = []
+        metadatas = []
+        documents_payload = []
+
         for doc in documents:
             # Create searchable text from document
             searchable_text = f"{doc['title']} {doc['content']}"
-            
-            # Generate embedding
-            embedding = self.embedding_service.generate_embedding(searchable_text)
-            
-            # Prepare metadata
-            metadata = {
+            ids.append(doc['id'])
+            embeddings.append(self.embedding_service.generate_embedding(searchable_text))
+            metadatas.append({
                 "title": doc['title'],
                 "doc_type": doc['doc_type'],
                 "category": doc.get('category', ''),
                 "content": doc['content'][:1000]  # Limit content length in metadata
-            }
-            
-            vectors.append({
-                "id": doc['id'],
-                "values": embedding,
-                "metadata": metadata
             })
+            documents_payload.append(searchable_text)
         
         # Upsert vectors in batches
         batch_size = 100
-        for i in range(0, len(vectors), batch_size):
-            batch = vectors[i:i + batch_size]
-            self.index.upsert(vectors=batch)
+        for i in range(0, len(ids), batch_size):
+            self.collection.upsert(
+                ids=ids[i:i + batch_size],
+                embeddings=embeddings[i:i + batch_size],
+                metadatas=metadatas[i:i + batch_size],
+                documents=documents_payload[i:i + batch_size]
+            )
         
         print(f"✓ Indexed {len(documents)} documents successfully")
         return len(documents)
@@ -123,26 +102,27 @@ class RAGService:
         Returns:
             List of relevant document dictionaries with metadata
         """
-        # Generate question embedding
         question_embedding = self.embedding_service.generate_embedding(question)
-        
-        # Search for relevant documents
-        results = self.index.query(
-            vector=question_embedding,
-            top_k=limit,
-            include_metadata=True
+
+        results = self.collection.query(
+            query_embeddings=[question_embedding],
+            n_results=limit,
+            include=["metadatas", "distances"]
         )
-        
+
         contexts = []
-        for match in results['matches']:
-            metadata = match['metadata']
+        ids = results.get("ids", [[]])[0]
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+
+        for doc_id, metadata, distance in zip(ids, metadatas, distances):
             doc_data = {
-                "id": match['id'],
+                "id": doc_id,
                 "title": metadata['title'],
                 "content": metadata['content'],
                 "doc_type": metadata['doc_type'],
                 "category": metadata.get('category', ''),
-                "relevance_score": match['score']
+                "relevance_score": 1 - float(distance) if distance is not None else 0.0
             }
             contexts.append(doc_data)
         
@@ -234,9 +214,10 @@ class RAGService:
         Returns:
             Dictionary with statistics
         """
-        stats = self.index.describe_index_stats()
         return {
-            "total_documents": stats['total_vector_count'],
-            "index_name": self.index_name,
+            "total_documents": self.collection.count(),
+            "collection_name": self.collection_name,
+            "vector_store": "chroma",
+            "persist_directory": self.persist_directory,
             "embedding_model": self.embedding_service.model_name
         }
